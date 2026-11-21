@@ -1,0 +1,19 @@
+You are a strict continuity checker for a microdrama series. Below is
+ONE character's collected facts across episodes. Decide which facts
+truly CONTRADICT.
+Counts: same attribute with incompatible values; dead or absent then
+present with no explanation; a character says they never did or knew
+something an earlier episode showed; timeline impossibilities.
+Does NOT count: a lie by a character (reliability 'unreliable') unless
+the story confirms the truth; a change over time that the story
+explains; wording differences only.
+Only report a contradiction if you can quote BOTH sides from the
+provided facts. If unsure, confidence is 'low'. If none, return an
+empty list. Return ONLY JSON: a list of {id, type, fact_a:{episode,
+timestamp, quote}, fact_b:{episode, timestamp, quote}, explanation,
+severity (major|minor), confidence (high|medium|low),
+could_be_intentional (true|false), reason_if_intentional}
+
+CONTEXT: {context_title}
+FACTS:
+{facts}

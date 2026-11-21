@@ -1,0 +1,30 @@
+Below are fact lists extracted from several episodes of one show.
+Merge them into a single STORY BIBLE.
+
+Tasks:
+1. Group facts by character. Merge aliases that clearly refer to
+   the same person (for example "Riya" and "Riya Sharma"). If
+   unsure, keep them separate and add a note.
+2. For each character, list every attribute (job, age, status,
+   relationships) with ALL the values found and the episode and
+   timestamp of each.
+3. Keep every quote. Do not delete or shorten any fact.
+4. Do not decide yet whether anything is a contradiction.
+
+Return JSON grouped like:
+{
+  "characters": {
+    "Riya": {
+      "aliases": ["Riya Sharma"],
+      "job": [
+        {"value": "nurse", "episode": 3, "timestamp": "00:42", "quote": "..."},
+        {"value": "teacher", "episode": 21, "timestamp": "01:10", "quote": "..."}
+      ]
+    }
+  },
+  "events": [...],
+  "knowledge": [...]
+}
+
+FACT LISTS:
+{fact_lists}

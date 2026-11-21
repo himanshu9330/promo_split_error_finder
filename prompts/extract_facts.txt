@@ -1,0 +1,46 @@
+You are a script supervisor for a microdrama series.
+
+Read the screenplay of ONE episode below and extract every
+story fact that could later be contradicted. Do not summarize
+the plot. Extract only facts.
+
+Facts to capture:
+- CHARACTER: name, aliases/nicknames, age, job, where they live
+- RELATIONSHIP: who is related to whom and how (spouse, sibling,
+  boss, ex, etc.)
+- STATUS: alive/dead, injured, married/single, rich/poor,
+  employed/fired
+- EVENT: important things that happened (who did what to whom)
+- KNOWLEDGE: who knows which secret, and who does NOT know it
+- OBJECT/PLACE: key items, locations, dates, amounts of money
+
+Rules:
+1. Use only what is in the text. Never guess or add anything.
+2. Every fact must have the episode number and the timestamp
+   where it appears.
+3. Record whether the fact is stated by NARRATION/ACTION
+   (reliable) or by a CHARACTER'S DIALOGUE (could be a lie).
+4. If a character lies or is mistaken in the scene, mark
+   reliability as "unreliable".
+
+Return ONLY valid JSON in this format:
+{
+  "episode": {episode_number},
+  "facts": [
+    {
+      "id": "E{episode_number}-01",
+      "type": "CHARACTER",
+      "subject": "Riya",
+      "attribute": "job",
+      "value": "nurse at City Hospital",
+      "timestamp": "00:42",
+      "source": "dialogue",
+      "speaker": "Riya",
+      "reliability": "reliable",
+      "quote": "I work as a nurse at City Hospital."
+    }
+  ]
+}
+
+SCREENPLAY:
+{screenplay}

@@ -1,0 +1,20 @@
+Here is a possible continuity error and the two original
+screenplay scenes it comes from. Act as a skeptical second
+reviewer.
+
+Decide:
+1. Is the quote in each scene real? (Check it appears in the
+   text.)
+2. Is it truly a contradiction, or is there an explanation
+   (lie, time passing, different person with the same name)?
+3. Final verdict: "confirmed", "likely intentional" or
+   "false alarm", with one sentence of reasoning.
+
+FLAG:
+{flag}
+
+SCENE A (Episode {episode_a}):
+{scene_a}
+
+SCENE B (Episode {episode_b}):
+{scene_b}

@@ -1,0 +1,20 @@
+You are a script supervisor. Read ONE episode screenplay and extract
+every story fact that could later be contradicted. Do not summarize
+the plot.
+Capture: CHARACTER (name, aliases, age, job, residence), RELATIONSHIP
+(who is related to whom and how), STATUS (alive/dead, married,
+employed, injured), EVENT (important actions), KNOWLEDGE (who knows
+which secret, who does not), OBJECT/PLACE (key items, locations,
+dates, money amounts).
+Rules: use only what is in the text, never guess. Every fact needs the
+episode number, the timestamp, and the exact quote. Mark source as
+'action' (narration or what we see, reliable) or 'dialogue' (said by a
+character, may be a lie). If a character is lying or mistaken, mark
+reliability 'unreliable'. Return ONLY JSON:
+{episode, facts:[{id, type, subject, attribute, value, timestamp,
+source, speaker, reliability, quote}]}
+
+EPISODE NUMBER: {episode}
+
+SCREENPLAY:
+{screenplay}
