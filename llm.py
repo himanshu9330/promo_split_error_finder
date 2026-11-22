@@ -61,17 +61,34 @@ def _is_rate_limit_error(error: Exception) -> bool:
 
 
 def parse_json(text: str) -> Any:
-    """Strip markdown json fences and parse text into a Python object."""
+    """Strip markdown json fences and parse text into a Python object with robust regex fallback."""
     cleaned = text.strip()
     match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, flags=re.IGNORECASE)
     if match:
         cleaned = match.group(1).strip()
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError as err:
+    except json.JSONDecodeError:
+        # Fallback: extract substring between first { and last } or first [ and last ]
+        first_brace = cleaned.find("{")
+        last_brace = cleaned.rfind("}")
+        first_bracket = cleaned.find("[")
+        last_bracket = cleaned.rfind("]")
+
+        if first_brace != -1 and last_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+            try:
+                return json.loads(cleaned[first_brace : last_brace + 1])
+            except json.JSONDecodeError:
+                pass
+        elif first_bracket != -1 and last_bracket != -1:
+            try:
+                return json.loads(cleaned[first_bracket : last_bracket + 1])
+            except json.JSONDecodeError:
+                pass
+
         raise ValueError(
-            f"Failed to parse model output as JSON:\n{err}\nRaw text:\n{text}"
-        ) from err
+            f"Failed to parse model output as JSON:\nRaw text (preview):\n{text[:400]}"
+        )
 
 
 def _call_gemini(model_name: str, api_key: str, prompt: str, system: str, json_mode: bool) -> str:
@@ -163,8 +180,9 @@ def _call_openrouter(model_name: str, api_key: str, prompt: str, system: str, js
     client = openai.OpenAI(
         api_key=api_key,
         base_url=base_url,
+        timeout=180.0,
         default_headers={
-            "HTTP-Referer": "http://localhost:8501",
+            "HTTP-Referer": "http://localhost:8502",
             "X-Title": "Continuity Checker",
         },
     )

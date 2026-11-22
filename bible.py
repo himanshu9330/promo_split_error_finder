@@ -16,7 +16,7 @@ def normalize_subject_name(name: str) -> str:
     cleaned = name.strip().lower()
     # Strip honorifics and titles
     cleaned = re.sub(
-        r"^(?:mr|mrs|ms|miss|dr|doctor|prof|professor|detective|officer|inspector|agent|nurse)\.?\s+",
+        r"^(?:mr|mrs|ms|miss|dr|doctor|prof|professor|detective|officer|inspector|agent|nurse|lady|lord|sir|noble|count|duke|duchess)\.?\s+",
         "",
         cleaned,
     )
@@ -40,7 +40,6 @@ def resolve_subject_aliases(subjects: list[str]) -> tuple[dict[str, str], dict[s
         aliases_map[name] = [name]
 
     # Check for containment merges (e.g. 'riya' contained in 'riya sharma')
-    # Since unique_names is sorted by length descending, longer names come first
     for i in range(len(unique_names)):
         longer = unique_names[i]
         for j in range(i + 1, len(unique_names)):
@@ -49,8 +48,21 @@ def resolve_subject_aliases(subjects: list[str]) -> tuple[dict[str, str], dict[s
             if canonical_map[shorter] != shorter:
                 continue
 
-            # Check if shorter is contained as a substring or whole word in longer
-            if shorter in longer:
+            # Avoid merging a single character into a compound multi-character interaction (e.g. 'juliana' into 'gerald and juliana')
+            is_compound_longer = any(sep in longer for sep in [" and ", "/", " & ", ", "])
+            is_compound_shorter = any(sep in shorter for sep in [" and ", "/", " & ", ", "])
+            if is_compound_longer and not is_compound_shorter:
+                continue
+
+            # Avoid merging a character into their possessions, clothing, or objects (e.g. 'juliana' into 'juliana's gown')
+            if f"{shorter}'s" in longer or f"{shorter}s'" in longer:
+                continue
+            item_suffixes = [" gown", " dress", " coat", " ring", " attire", " uniform", " carriage", " cane", " pendant", " necklace"]
+            if any(longer.endswith(suff) for suff in item_suffixes):
+                continue
+
+            # Check if shorter is contained as a whole word or substring in longer
+            if re.search(rf"\b{re.escape(shorter)}\b", longer) or shorter in longer:
                 canonical_map[shorter] = longer
                 if shorter not in aliases_map[longer]:
                     aliases_map[longer].append(shorter)

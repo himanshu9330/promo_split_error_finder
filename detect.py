@@ -81,7 +81,7 @@ def detect_events_and_knowledge(events: list[dict[str, Any]], knowledge: list[di
     """Second pass: checks chronological events and knowledge to catch cross-scene contradictions."""
     combined = sorted(
         events + knowledge,
-        key=lambda x: (x.get("episode", 0), x.get("timestamp", "")),
+        key=lambda x: (x.get("episode", 0) or 0, str(x.get("timestamp") or "")),
     )
     if not combined:
         return []
@@ -124,20 +124,26 @@ def detect_all(bible: dict[str, Any]) -> list[dict[str, Any]]:
     # Pass 1: Character candidate groups
     for idx, (char_name, facts) in enumerate(char_candidate_map.items(), 1):
         print(f"[{idx}/{len(char_candidate_map)}] Checking character: '{char_name}' ({len(facts)} facts)...")
-        flags = detect_for_character(char_name, facts)
-        for fl in flags:
-            fl["subject"] = char_name
-        raw_flags.extend(flags)
+        try:
+            flags = detect_for_character(char_name, facts)
+            for fl in flags:
+                fl["subject"] = char_name
+            raw_flags.extend(flags)
+        except Exception as e:
+            print(f"  Warning: detection failed for '{char_name}': {e}")
 
     # Pass 2: Events and Knowledge
     events = bible.get("events", [])
     knowledge = bible.get("knowledge", [])
     if events or knowledge:
         print(f"Running second pass for chronological events ({len(events)}) and knowledge ({len(knowledge)})...")
-        event_flags = detect_events_and_knowledge(events, knowledge)
-        for fl in event_flags:
-            fl.setdefault("subject", "events/knowledge")
-        raw_flags.extend(event_flags)
+        try:
+            event_flags = detect_events_and_knowledge(events, knowledge)
+            for fl in event_flags:
+                fl.setdefault("subject", "events/knowledge")
+            raw_flags.extend(event_flags)
+        except Exception as e:
+            print(f"  Warning: detection failed for events/knowledge: {e}")
 
     # Quote verification: drop flags whose quotes are not in original facts
     known_quotes = _collect_all_fact_quotes(bible)

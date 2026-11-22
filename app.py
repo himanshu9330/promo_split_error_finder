@@ -1,4 +1,4 @@
-"""Streamlit Web UI for Cross-Episode Continuity Checker."""
+"""Streamlit Web UI for Cross-Episode Continuity Checker with Persistent Human Approval."""
 
 import json
 import os
@@ -10,17 +10,20 @@ from dotenv import load_dotenv
 
 from bible import build_bible
 from detect import detect_all
-from extract import extract_all
+from extract import extract_episode
 from loader import load_episodes
-from report import build_report
+from report import build_report, load_decisions, save_all_decisions, save_decision
 from verify import get_scene_context, verify_all
 
 # Directory setup
 BASE_DIR = Path(__file__).resolve().parent
 EPISODES_DIR = BASE_DIR / "data" / "episodes"
 OUTPUTS_DIR = BASE_DIR / "outputs"
+FACTS_DIR = OUTPUTS_DIR / "facts"
+
 EPISODES_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+FACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load existing environment
 load_dotenv(BASE_DIR / ".env")
@@ -31,16 +34,27 @@ st.set_page_config(
     layout="wide",
 )
 
-# Initialize session state
+# Persistent decisions
+decisions = load_decisions()
+
+# Initialize session state from disk
 if "verified_flags" not in st.session_state:
-    st.session_state["verified_flags"] = []
+    saved_flags_path = OUTPUTS_DIR / "flags_verified.json"
+    if saved_flags_path.exists():
+        try:
+            st.session_state["verified_flags"] = json.loads(saved_flags_path.read_text(encoding="utf-8"))
+        except Exception:
+            st.session_state["verified_flags"] = []
+    else:
+        st.session_state["verified_flags"] = []
+
 if "decisions" not in st.session_state:
-    st.session_state["decisions"] = {}
+    st.session_state["decisions"] = decisions
 
 # -------------------------------------------------------------
 # SIDEBAR: Configuration & Controls
 # -------------------------------------------------------------
-st.sidebar.title("⚙️ Checker Settings")
+st.sidebar.title("⚙️ Model & Scope")
 
 # Provider and Model selection
 default_provider = os.getenv("PROVIDER", "openrouter").lower()
@@ -73,7 +87,7 @@ api_key_input = st.sidebar.text_input(
     f"{key_name}",
     value=current_key if current_key and "your_" not in current_key else "",
     type="password",
-    help=f"Loaded from .env. You can also paste or override your key here.",
+    help="Loaded from .env. You can also paste or override your key here.",
 )
 if api_key_input:
     os.environ[key_name] = api_key_input
@@ -86,11 +100,14 @@ total_existing = len(existing_episodes)
 
 st.sidebar.subheader("Episode Scope")
 if total_existing > 0:
+    cached_episodes = len(list(FACTS_DIR.glob("ep_*.json")))
+    st.sidebar.caption(f"📁 **Total Found:** {total_existing} episodes | ⚡ **Cached:** {cached_episodes}")
     num_to_process = st.sidebar.slider(
-        "Episodes to process",
+        "Episodes to process in this run",
         min_value=1,
-        max_value=max(1, total_existing),
-        value=total_existing,
+        max_value=total_existing,
+        value=min(total_existing, 5),
+        help="Free models take ~1-2 min per episode. We recommend 3-5 episodes for quick verification.",
     )
 else:
     num_to_process = 1
@@ -104,8 +121,7 @@ run_clicked = st.sidebar.button("🚀 Run Continuity Check", type="primary", use
 st.title("🎬 Cross-Episode Continuity Checker")
 st.caption("AI-assisted continuity supervisor for microdrama series (50+ short episodes).")
 
-# Warning notice as required
-st.warning("⚠️ **Notice:** Flags are suggestions for a human reviewer, not final corrections.")
+st.warning("⚠️ **Notice:** Flags are suggestions for a human reviewer. Use the **Human Approval** buttons below to accept or reject each finding.")
 
 # Upload Area
 with st.expander("📁 Upload Episode Screenplays", expanded=(total_existing == 0)):
@@ -123,8 +139,10 @@ with st.expander("📁 Upload Episode Screenplays", expanded=(total_existing == 
         st.rerun()
 
     if total_existing > 0:
-        st.write(f"**Current files in `data/episodes/` ({total_existing}):**")
-        file_list = [f"Ep {ep['episode']}: {ep['filename']} ({len(ep['text'])} chars)" for ep in existing_episodes]
+        st.write(f"**Loaded in `data/episodes/` ({total_existing} episodes):**")
+        file_list = [f"Ep {ep['episode']}: {ep['filename']} ({len(ep['text'])} chars)" for ep in existing_episodes[:10]]
+        if total_existing > 10:
+            file_list.append(f"... and {total_existing - 10} more episodes.")
         st.text("\n".join(file_list))
 
 # -------------------------------------------------------------
@@ -144,45 +162,64 @@ if run_clicked:
             # Stage 1: Load episodes
             status_box.info("Stage 1/6: Loading and sorting screenplay files...")
             episodes = existing_episodes[:num_to_process]
-            progress_bar.progress(15)
+            progress_bar.progress(10)
 
-            # Stage 2: Fact extraction
-            status_box.info(f"Stage 2/6: Extracting story facts from {len(episodes)} episode(s)...")
-            all_facts = extract_all(episodes)
-            progress_bar.progress(40)
+            # Stage 2: Fact extraction with per-episode live update
+            all_facts = []
+            for idx, ep in enumerate(episodes, 1):
+                ep_num = ep["episode"]
+                out_file = FACTS_DIR / f"ep_{ep_num:02d}.json"
+                progress_val = int(10 + (idx / len(episodes)) * 35)
+                progress_bar.progress(progress_val)
+
+                if out_file.exists():
+                    status_box.info(f"Stage 2/6: Loading cached Episode {ep_num} ({idx}/{len(episodes)})...")
+                    try:
+                        saved = json.loads(out_file.read_text(encoding="utf-8"))
+                        all_facts.extend(saved.get("facts", []))
+                        continue
+                    except Exception:
+                        pass
+
+                status_box.info(f"Stage 2/6: Extracting facts for Episode {ep_num} ({idx}/{len(episodes)})... Please wait (~60-90s).")
+                ep_result = extract_episode(ep)
+                out_file.write_text(json.dumps(ep_result, indent=2), encoding="utf-8")
+                all_facts.extend(ep_result.get("facts", []))
+
+            progress_bar.progress(50)
 
             # Stage 3: Merge story bible
             status_box.info("Stage 3/6: Merging facts into Story Bible...")
             bible = build_bible(all_facts)
-            progress_bar.progress(60)
+            progress_bar.progress(65)
 
             # Stage 4: Detect contradictions
             status_box.info("Stage 4/6: Detecting candidate contradictions across episodes...")
             raw_flags = detect_all(bible)
-            progress_bar.progress(75)
+            progress_bar.progress(80)
 
             # Stage 5: Skeptical verification
             status_box.info("Stage 5/6: Verifying flags against original scene scripts...")
             verified_flags = verify_all(raw_flags, episodes)
-            progress_bar.progress(90)
+            progress_bar.progress(92)
 
             # Stage 6: Build report
-            status_box.info("Stage 6/6: Generating markdown and CSV reports...")
+            status_box.info("Stage 6/6: Updating markdown and CSV reports...")
             build_report(verified_flags)
             progress_bar.progress(100)
 
             st.session_state["verified_flags"] = verified_flags
             status_box.success("✅ Continuity check pipeline complete!")
+            st.rerun()
 
         except Exception as exc:
             status_box.error(f"❌ Error during execution: {exc}")
 
 # -------------------------------------------------------------
-# RESULTS & QA EDITOR VIEW
+# HUMAN QA APPROVAL & RESULTS DASHBOARD
 # -------------------------------------------------------------
 flags = st.session_state.get("verified_flags", [])
 
-# If session state is empty, check if flags_verified.json already exists from previous runs
 if not flags:
     saved_flags_path = OUTPUTS_DIR / "flags_verified.json"
     if saved_flags_path.exists():
@@ -194,39 +231,89 @@ if not flags:
 
 if flags:
     st.divider()
-    st.subheader("📋 Review Flagged Contradictions")
 
-    # Severity and verdict filters
-    col_filter1, col_filter2, col_actions = st.columns([2, 2, 4])
+    # Load persistent decisions from disk
+    current_decisions = load_decisions()
+    st.session_state["decisions"] = current_decisions
+
+    # Calculate Approval Metrics
+    approved_count = sum(1 for f in flags if current_decisions.get(f.get("id", ""), {}).get("status") == "Approved")
+    rejected_count = sum(1 for f in flags if current_decisions.get(f.get("id", ""), {}).get("status") == "Rejected")
+    pending_count = len(flags) - approved_count - rejected_count
+
+    st.subheader("📋 Human Review & Sign-Off Dashboard")
+
+    # Metrics Summary Cards
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Flags", len(flags))
+    m2.metric("✅ Approved (Confirmed)", approved_count)
+    m3.metric("❌ Rejected (Dismissed)", rejected_count)
+    m4.metric("⏳ Pending Decision", pending_count)
+
+    # Batch Action Toolbar
+    st.markdown("#### ⚡ Batch Approval Actions")
+    b_col1, b_col2, b_col3, _ = st.columns([2, 2, 2, 4])
+
+    with b_col1:
+        if st.button("✅ Approve All Confirmed", help="Approve all flags marked 'confirmed' by the verifier"):
+            for f in flags:
+                if f.get("verdict") == "confirmed":
+                    save_decision(f["id"], "Approved", "Batch approved verified contradiction.")
+            build_report(flags)
+            st.rerun()
+
+    with b_col2:
+        if st.button("❌ Reject All False Alarms", help="Reject all flags marked 'false_alarm'"):
+            for f in flags:
+                if f.get("verdict") == "false_alarm":
+                    save_decision(f["id"], "Rejected", "Batch rejected false alarm.")
+            build_report(flags)
+            st.rerun()
+
+    with b_col3:
+        if st.button("🔄 Reset All to Pending", help="Clear all approvals"):
+            save_all_decisions({})
+            build_report(flags)
+            st.rerun()
+
+    # Filter Controls
+    st.markdown("#### 🔍 Filter Flags")
+    col_filter1, col_filter2, col_filter3 = st.columns(3)
     with col_filter1:
-        severity_filter = st.selectbox("Filter by Severity", ["All", "Major", "Minor"])
+        approval_filter = st.selectbox("Filter by Human Approval", ["All", "Pending", "Approved", "Rejected"])
     with col_filter2:
-        verdict_filter = st.selectbox("Filter by Verdict", ["All", "Confirmed", "Likely Intentional", "False Alarm"])
+        severity_filter = st.selectbox("Filter by Severity", ["All", "Major", "Minor"])
+    with col_filter3:
+        verdict_filter = st.selectbox("Filter by Verifier Verdict", ["All", "Confirmed", "Likely Intentional", "False Alarm"])
 
     filtered_flags = flags
+    if approval_filter != "All":
+        filtered_flags = [f for f in filtered_flags if current_decisions.get(f.get("id", ""), {}).get("status", "Pending") == approval_filter]
     if severity_filter != "All":
         filtered_flags = [f for f in filtered_flags if str(f.get("severity", "")).lower() == severity_filter.lower()]
     if verdict_filter != "All":
         verdict_key = verdict_filter.lower().replace(" ", "_")
         filtered_flags = [f for f in filtered_flags if str(f.get("verdict", "")).lower() == verdict_key]
 
-    # Summary table
+    # Overview Table
     table_data = []
     for f in filtered_flags:
+        flag_id = f.get("id", "")
         fact_a = f.get("fact_a", {})
         fact_b = f.get("fact_b", {})
-        flag_id = f.get("id", "")
-        decision = st.session_state["decisions"].get(flag_id, "Pending")
+        dec_info = current_decisions.get(flag_id, {})
+        status_val = dec_info.get("status", "Pending")
         table_data.append({
             "ID": flag_id,
+            "Human Approval": status_val,
             "Subject": f.get("subject", ""),
             "Ep A": fact_a.get("episode", ""),
             "Ep B": fact_b.get("episode", ""),
             "Explanation": f.get("explanation", ""),
             "Severity": str(f.get("severity", "")).title(),
             "Confidence": str(f.get("confidence", "")).title(),
-            "Verdict": str(f.get("verdict", "")).replace("_", " ").title(),
-            "Decision": decision,
+            "Verifier Verdict": str(f.get("verdict", "")).replace("_", " ").title(),
+            "Notes": dec_info.get("notes", ""),
         })
 
     if table_data:
@@ -234,20 +321,23 @@ if flags:
     else:
         st.info("No flags match the selected filters.")
 
-    # Detailed row expanders with scene context and Accept/Reject buttons
+    # Detailed Investigation with Immediate Human Approval Actions
     episodes_map = {ep["episode"]: ep["text"] for ep in existing_episodes}
 
-    st.markdown("### Detailed Investigation & Human Decision")
+    st.markdown("### 🔍 Detailed Investigation & Human Decision")
     for f in filtered_flags:
         flag_id = f.get("id", "N/A")
         subject = f.get("subject", "N/A")
         verdict = f.get("verdict", "N/A")
         explanation = f.get("explanation", "")
-        current_decision = st.session_state["decisions"].get(flag_id, "Pending")
 
-        badge_color = "green" if current_decision == "Accepted" else ("red" if current_decision == "Rejected" else "gray")
+        dec_info = current_decisions.get(flag_id, {})
+        approval_status = dec_info.get("status", "Pending")
+        existing_notes = dec_info.get("notes", "")
 
-        with st.expander(f"**[{flag_id}] {subject.title()}**: {explanation} — Decision: :{badge_color}[{current_decision}]"):
+        badge_color = "green" if approval_status == "Approved" else ("red" if approval_status == "Rejected" else "orange")
+
+        with st.expander(f"**[{flag_id}] {subject.title()}**: {explanation} — Human Status: :{badge_color}[{approval_status}]"):
             fact_a = f.get("fact_a", {})
             fact_b = f.get("fact_b", {})
 
@@ -265,32 +355,51 @@ if flags:
             with c1:
                 st.markdown(f"**Fact A (Episode {ep_a}, {ts_a})**")
                 st.info(f"**Quote:** \"{q_a}\"")
-                st.text_area(f"Scene A Context (Ep {ep_a})", value=scene_a, height=140, key=f"ctx_a_{flag_id}", disabled=True)
+                st.text_area(f"Scene A Context (Ep {ep_a})", value=scene_a, height=130, key=f"ctx_a_{flag_id}", disabled=True)
 
             with c2:
                 st.markdown(f"**Fact B (Episode {ep_b}, {ts_b})**")
                 st.info(f"**Quote:** \"{q_b}\"")
-                st.text_area(f"Scene B Context (Ep {ep_b})", value=scene_b, height=140, key=f"ctx_b_{flag_id}", disabled=True)
+                st.text_area(f"Scene B Context (Ep {ep_b})", value=scene_b, height=130, key=f"ctx_b_{flag_id}", disabled=True)
 
-            st.markdown(f"**Verifier Verdict:** `{verdict}`")
-            st.markdown(f"**Verifier Reasoning:** {f.get('reasoning', 'N/A')}")
+            st.markdown(f"**Verifier Verdict:** `{verdict}` | **Reasoning:** {f.get('reasoning', 'N/A')}")
 
-            # Human QA Action buttons
-            btn_col1, btn_col2, _ = st.columns([1, 1, 6])
-            with btn_col1:
-                if st.button("✅ Accept Flag", key=f"accept_btn_{flag_id}"):
-                    st.session_state["decisions"][flag_id] = "Accepted"
+            # Human QA Actions & Notes
+            st.markdown("---")
+            action_col1, action_col2, action_col3, notes_col = st.columns([2, 2, 2, 6])
+
+            notes_input = notes_col.text_input(
+                "Reviewer Note / Justification:",
+                value=existing_notes,
+                key=f"note_input_{flag_id}",
+                placeholder="e.g. Confirmed discrepancy between scripts",
+            )
+
+            with action_col1:
+                if st.button("✅ Approve Bug", key=f"btn_app_{flag_id}", use_container_width=True):
+                    save_decision(flag_id, "Approved", notes_input)
+                    build_report(flags)
+                    st.success(f"{flag_id} marked as Approved!")
                     st.rerun()
-            with btn_col2:
-                if st.button("❌ Reject Flag", key=f"reject_btn_{flag_id}"):
-                    st.session_state["decisions"][flag_id] = "Rejected"
+
+            with action_col2:
+                if st.button("❌ Reject / Dismiss", key=f"btn_rej_{flag_id}", use_container_width=True):
+                    save_decision(flag_id, "Rejected", notes_input)
+                    build_report(flags)
+                    st.info(f"{flag_id} marked as Rejected!")
+                    st.rerun()
+
+            with action_col3:
+                if st.button("⏳ Mark Pending", key=f"btn_pen_{flag_id}", use_container_width=True):
+                    save_decision(flag_id, "Pending", notes_input)
+                    build_report(flags)
                     st.rerun()
 
     # ---------------------------------------------------------
     # DOWNLOAD REPORT BUTTONS
     # ---------------------------------------------------------
     st.divider()
-    st.subheader("📥 Export Reports")
+    st.subheader("📥 Export Reports (Includes Human Approvals)")
     rep_col1, rep_col2, _ = st.columns([2, 2, 4])
 
     md_path = OUTPUTS_DIR / "report.md"

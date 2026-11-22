@@ -41,33 +41,38 @@ def verify_quote_in_text(quote: str, episode_text: str) -> bool:
 
 def extract_episode(ep: dict[str, Any]) -> dict[str, Any]:
     """Extract story facts from a single episode using call_model, and verify quotes in code."""
-    prompt_template = PROMPT_FILE.read_text(encoding="utf-8")
-    formatted_prompt = prompt_template.replace("{episode}", str(ep["episode"])).replace(
-        "{screenplay}", ep["text"]
-    )
+    try:
+        prompt_template = PROMPT_FILE.read_text(encoding="utf-8")
+        formatted_prompt = prompt_template.replace("{episode}", str(ep["episode"])).replace(
+            "{screenplay}", ep["text"]
+        )
 
-    response_text = call_model(formatted_prompt, json_mode=True)
-    parsed = parse_json(response_text)
+        response_text = call_model(formatted_prompt, json_mode=True)
+        parsed = parse_json(response_text)
 
-    # Standardize result structure
-    if isinstance(parsed, list):
-        facts = parsed
-        result = {"episode": ep["episode"], "facts": facts}
-    elif isinstance(parsed, dict):
-        result = parsed
-        if "episode" not in result:
-            result["episode"] = ep["episode"]
-        if "facts" not in result:
-            result["facts"] = []
-    else:
-        result = {"episode": ep["episode"], "facts": []}
+        # Standardize result structure
+        if isinstance(parsed, list):
+            facts = parsed
+            result = {"episode": ep["episode"], "facts": facts}
+        elif isinstance(parsed, dict):
+            result = parsed
+            if "episode" not in result:
+                result["episode"] = ep["episode"]
+            if "facts" not in result:
+                result["facts"] = []
+        else:
+            result = {"episode": ep["episode"], "facts": []}
 
-    # Verify each fact's quote in code
-    for fact in result.get("facts", []):
-        quote = fact.get("quote", "")
-        fact["quote_verified"] = verify_quote_in_text(quote, ep["text"])
+        # Verify each fact's quote in code
+        for fact in result.get("facts", []):
+            if isinstance(fact, dict):
+                quote = fact.get("quote", "")
+                fact["quote_verified"] = verify_quote_in_text(quote, ep["text"])
 
-    return result
+        return result
+    except Exception as e:
+        print(f"Error extracting facts for Episode {ep.get('episode')}: {e}")
+        return {"episode": ep.get("episode", 0), "facts": [], "error": str(e)}
 
 
 def extract_all(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:

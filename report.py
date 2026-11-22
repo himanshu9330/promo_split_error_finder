@@ -1,16 +1,49 @@
-"""Generates structured review reports (Markdown and CSV) for human QA editors."""
+"""Generates structured review reports (Markdown and CSV) for human QA editors with persistent approval tracking."""
 
 import csv
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_MD_PATH = BASE_DIR / "outputs" / "report.md"
 OUTPUT_CSV_PATH = BASE_DIR / "outputs" / "report.csv"
+DECISIONS_PATH = BASE_DIR / "outputs" / "decisions.json"
+ROOT_MD_PATH = BASE_DIR.parent / "report.md"
+ROOT_CSV_PATH = BASE_DIR.parent / "report.csv"
 
 
-def _get_summary_stats(flags: list[dict[str, Any]]) -> dict[str, int]:
+def load_decisions() -> dict[str, dict[str, Any]]:
+    """Load persistent human QA decisions from outputs/decisions.json."""
+    if DECISIONS_PATH.exists():
+        try:
+            return json.loads(DECISIONS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def save_decision(flag_id: str, status: str, notes: str = "") -> dict[str, dict[str, Any]]:
+    """Save or update a human QA decision persistently on disk and sync reports."""
+    decisions = load_decisions()
+    decisions[flag_id] = {
+        "status": status,  # "Approved", "Rejected", "Pending"
+        "notes": notes,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    DECISIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DECISIONS_PATH.write_text(json.dumps(decisions, indent=2), encoding="utf-8")
+    return decisions
+
+
+def save_all_decisions(decisions: dict[str, dict[str, Any]]) -> None:
+    """Overwrite all decisions in outputs/decisions.json."""
+    DECISIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DECISIONS_PATH.write_text(json.dumps(decisions, indent=2), encoding="utf-8")
+
+
+def _get_summary_stats(flags: list[dict[str, Any]], decisions: dict[str, dict[str, Any]]) -> dict[str, int]:
     """Calculate summary statistics from outputs folder and flags list."""
     facts_dir = BASE_DIR / "outputs" / "facts"
     bible_path = BASE_DIR / "outputs" / "bible.json"
@@ -48,6 +81,10 @@ def _get_summary_stats(flags: list[dict[str, Any]]) -> dict[str, int]:
     intentional_count = sum(1 for f in flags if f.get("verdict") == "likely_intentional")
     false_alarm_count = sum(1 for f in flags if f.get("verdict") == "false_alarm")
 
+    approved_count = sum(1 for f in flags if decisions.get(f.get("id", ""), {}).get("status") == "Approved")
+    rejected_count = sum(1 for f in flags if decisions.get(f.get("id", ""), {}).get("status") == "Rejected")
+    pending_count = len(flags) - approved_count - rejected_count
+
     return {
         "episodes_checked": episodes_count,
         "facts_extracted": facts_count,
@@ -55,6 +92,9 @@ def _get_summary_stats(flags: list[dict[str, Any]]) -> dict[str, int]:
         "confirmed": confirmed_count,
         "likely_intentional": intentional_count,
         "false_alarm": false_alarm_count,
+        "approved": approved_count,
+        "rejected": rejected_count,
+        "pending": pending_count,
     }
 
 
@@ -73,7 +113,7 @@ def _sort_flags(flags: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def build_report(flags: list[dict[str, Any]] | None = None) -> None:
-    """Generate outputs/report.md (excluding false alarms) and outputs/report.csv (including false alarms)."""
+    """Generate outputs/report.md and outputs/report.csv with human approval tracking."""
     if flags is None:
         flags_file = BASE_DIR / "outputs" / "flags_verified.json"
         if not flags_file.exists():
@@ -86,8 +126,9 @@ def build_report(flags: list[dict[str, Any]] | None = None) -> None:
     OUTPUT_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+    decisions = load_decisions()
     sorted_flags = _sort_flags(flags)
-    stats = _get_summary_stats(flags)
+    stats = _get_summary_stats(flags, decisions)
 
     # 1. Build Markdown Report (Exclude 'false_alarm')
     active_flags = [f for f in sorted_flags if f.get("verdict") != "false_alarm"]
@@ -95,13 +136,18 @@ def build_report(flags: list[dict[str, Any]] | None = None) -> None:
     md_lines: list[str] = [
         "# Cross-Episode Continuity QA Report",
         "",
-        "## Summary",
+        "## Summary Statistics",
         f"- **Episodes Checked:** {stats['episodes_checked']}",
         f"- **Facts Extracted:** {stats['facts_extracted']}",
         f"- **Flags Raised:** {stats['flags_raised']}",
         f"- **Confirmed Contradictions:** {stats['confirmed']}",
         f"- **Likely Intentional:** {stats['likely_intentional']}",
         f"- **False Alarms (Filtered):** {stats['false_alarm']}",
+        "",
+        "## Human QA Approval Status",
+        f"- **Approved (Action Confirmed):** {stats['approved']}",
+        f"- **Rejected (Dismissed by Human):** {stats['rejected']}",
+        f"- **Pending Review:** {stats['pending']}",
         "",
         "---",
         "",
@@ -122,6 +168,17 @@ def build_report(flags: list[dict[str, Any]] | None = None) -> None:
             explanation = f.get("explanation", "N/A")
             subject = f.get("subject", "N/A")
 
+            # Human approval state
+            dec_info = decisions.get(flag_id, {})
+            approval_status = dec_info.get("status", "Pending")
+            reviewer_notes = dec_info.get("notes", "")
+
+            box_accept = "[x]" if approval_status == "Approved" else "[ ]"
+            box_reject = "[x]" if approval_status == "Rejected" else "[ ]"
+            decision_line = f"Reviewer decision: {box_accept} accept  {box_reject} reject"
+            if reviewer_notes:
+                decision_line += f"  (Note: {reviewer_notes})"
+
             fact_a = f.get("fact_a", {})
             fact_b = f.get("fact_b", {})
 
@@ -136,22 +193,25 @@ def build_report(flags: list[dict[str, Any]] | None = None) -> None:
             md_lines.extend([
                 f"### [{flag_id}] {c_type} — {sev} Severity ({conf} Confidence)",
                 f"- **Character/Subject:** `{subject}`",
+                f"- **Human Approval:** **{approval_status.upper()}**",
                 f"- **Verifier Verdict:** `{verdict}`",
                 f"- **Verifier Reasoning:** {reasoning}",
                 f"- **Explanation:** {explanation}",
                 "- **Contradictory Evidence:**",
                 f"  - **Fact A (Ep {ep_a}, {ts_a}):** \"{q_a}\"",
                 f"  - **Fact B (Ep {ep_b}, {ts_b}):** \"{q_b}\"",
-                "- **Reviewer decision:** [ ] accept  [ ] reject",
+                f"- **{decision_line}**",
                 "",
                 "---",
                 "",
             ])
 
-    OUTPUT_MD_PATH.write_text("\n".join(md_lines), encoding="utf-8")
+    md_content = "\n".join(md_lines)
+    OUTPUT_MD_PATH.write_text(md_content, encoding="utf-8")
+    ROOT_MD_PATH.write_text(md_content, encoding="utf-8")
     print(f"Generated Markdown report: {OUTPUT_MD_PATH}")
 
-    # 2. Build CSV Report (Include 'false_alarm')
+    # 2. Build CSV Report (Include 'false_alarm' and 'human_approval')
     fieldnames = [
         "id",
         "type",
@@ -159,6 +219,8 @@ def build_report(flags: list[dict[str, Any]] | None = None) -> None:
         "severity",
         "confidence",
         "verdict",
+        "human_approval",
+        "reviewer_notes",
         "explanation",
         "reasoning",
         "fact_a_episode",
@@ -169,28 +231,34 @@ def build_report(flags: list[dict[str, Any]] | None = None) -> None:
         "fact_b_quote",
     ]
 
-    with open(OUTPUT_CSV_PATH, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for f in sorted_flags:
-            fact_a = f.get("fact_a", {})
-            fact_b = f.get("fact_b", {})
-            writer.writerow({
-                "id": f.get("id", ""),
-                "type": f.get("type", ""),
-                "subject": f.get("subject", ""),
-                "severity": f.get("severity", ""),
-                "confidence": f.get("confidence", ""),
-                "verdict": f.get("verdict", ""),
-                "explanation": f.get("explanation", ""),
-                "reasoning": f.get("reasoning", ""),
-                "fact_a_episode": fact_a.get("episode", ""),
-                "fact_a_timestamp": fact_a.get("timestamp", ""),
-                "fact_a_quote": fact_a.get("quote", ""),
-                "fact_b_episode": fact_b.get("episode", ""),
-                "fact_b_timestamp": fact_b.get("timestamp", ""),
-                "fact_b_quote": fact_b.get("quote", ""),
-            })
+    for csv_file_target in [OUTPUT_CSV_PATH, ROOT_CSV_PATH]:
+        with open(csv_file_target, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for f in sorted_flags:
+                flag_id = f.get("id", "")
+                fact_a = f.get("fact_a", {})
+                fact_b = f.get("fact_b", {})
+                dec_info = decisions.get(flag_id, {})
+
+                writer.writerow({
+                    "id": flag_id,
+                    "type": f.get("type", ""),
+                    "subject": f.get("subject", ""),
+                    "severity": f.get("severity", ""),
+                    "confidence": f.get("confidence", ""),
+                    "verdict": f.get("verdict", ""),
+                    "human_approval": dec_info.get("status", "Pending"),
+                    "reviewer_notes": dec_info.get("notes", ""),
+                    "explanation": f.get("explanation", ""),
+                    "reasoning": f.get("reasoning", ""),
+                    "fact_a_episode": fact_a.get("episode", ""),
+                    "fact_a_timestamp": fact_a.get("timestamp", ""),
+                    "fact_a_quote": fact_a.get("quote", ""),
+                    "fact_b_episode": fact_b.get("episode", ""),
+                    "fact_b_timestamp": fact_b.get("timestamp", ""),
+                    "fact_b_quote": fact_b.get("quote", ""),
+                })
 
     print(f"Generated CSV report: {OUTPUT_CSV_PATH}")
 
@@ -202,46 +270,5 @@ if __name__ == "__main__":
 
     if flags_file.exists():
         flags_data = json.loads(flags_file.read_text(encoding="utf-8"))
-        print(f"Loaded {len(flags_data)} flag(s) from {flags_file.name}. Building reports...")
+        print(f"Loaded {len(flags_data)} flag(s). Building reports...")
         build_report(flags_data)
-    else:
-        print("No verified flags found. Generating report with sample flags...")
-        sample_flags = [
-            {
-                "id": "C1",
-                "type": "attribute",
-                "subject": "riya sharma",
-                "severity": "major",
-                "confidence": "high",
-                "verdict": "confirmed",
-                "explanation": "Riya is introduced as a nurse in Ep 1 but claims to be a surgeon in Ep 3.",
-                "reasoning": "Original scenes confirm two contradictory professions with no explanation of career change.",
-                "fact_a": {"episode": 1, "timestamp": "00:42", "quote": "I work as a nurse at City Hospital."},
-                "fact_b": {"episode": 3, "timestamp": "01:15", "quote": "I am a surgeon at Metro Clinic."},
-            },
-            {
-                "id": "C2",
-                "type": "status",
-                "subject": "vikram",
-                "severity": "major",
-                "confidence": "high",
-                "verdict": "confirmed",
-                "explanation": "Vikram is alive in Episode 3 but stated to have passed away last year in Episode 4.",
-                "reasoning": "Unexplained death timeline impossibility.",
-                "fact_a": {"episode": 3, "timestamp": "00:10", "quote": "Vikram is alive."},
-                "fact_b": {"episode": 4, "timestamp": "00:30", "quote": "Vikram passed away last year."},
-            },
-            {
-                "id": "C3",
-                "type": "attribute",
-                "subject": "boss",
-                "severity": "minor",
-                "confidence": "low",
-                "verdict": "false_alarm",
-                "explanation": "Boss mentioned different car colors.",
-                "reasoning": "The two scenes describe two distinct company rental vehicles, not his personal car.",
-                "fact_a": {"episode": 1, "timestamp": "00:15", "quote": "The black sedan arrived."},
-                "fact_b": {"episode": 2, "timestamp": "00:20", "quote": "The white sedan arrived."},
-            },
-        ]
-        build_report(sample_flags)
