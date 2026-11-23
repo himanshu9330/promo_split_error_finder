@@ -1,4 +1,4 @@
-"""Streamlit Web UI for Cross-Episode Continuity Checker with Persistent Human Approval."""
+"""Streamlit Web UI for Cross-Episode Continuity Checker with Persistent Human Approval and Fresh Analysis Controls."""
 
 import json
 import os
@@ -56,25 +56,42 @@ if "decisions" not in st.session_state:
 # -------------------------------------------------------------
 st.sidebar.title("⚙️ Model & Scope")
 
-# Provider and Model selection
+# Provider selection
 default_provider = os.getenv("PROVIDER", "openrouter").lower()
 providers = ["openrouter", "gemini", "anthropic", "openai"]
 provider_index = providers.index(default_provider) if default_provider in providers else 0
-
 selected_provider = st.sidebar.selectbox("Provider", providers, index=provider_index)
 os.environ["PROVIDER"] = selected_provider
 
-default_models = {
-    "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "gemini": "gemini-1.5-flash",
-    "anthropic": "claude-3-5-sonnet-20241022",
-    "openai": "gpt-4o-mini",
-}
-env_model = os.getenv("MODEL_NAME", default_models.get(selected_provider, ""))
-selected_model = st.sidebar.text_input("Model Name", value=env_model)
+# Model preset selection
+if selected_provider == "openrouter":
+    model_options = [
+        "nvidia/nemotron-3.5-lightning:free (⚡ Recommended - Fast & Free)",
+        "nvidia/nemotron-3-ultra-550b-a55b:free (🧠 Deep 550B - Heavy ~90s/ep)",
+        "google/gemini-2.0-flash-exp:free (🚀 Ultra Fast)",
+        "Custom Model",
+    ]
+    model_choice = st.sidebar.selectbox("Recommended Free Models", model_options, index=0)
+    if "Custom Model" in model_choice:
+        selected_model = st.sidebar.text_input("Custom Model Name", value=os.getenv("MODEL_NAME", "nvidia/nemotron-3.5-lightning:free"))
+    else:
+        selected_model = model_choice.split(" ")[0].strip()
+else:
+    default_models = {
+        "gemini": "gemini-1.5-flash",
+        "anthropic": "claude-3-5-sonnet-20241022",
+        "openai": "gpt-4o-mini",
+    }
+    env_model = os.getenv("MODEL_NAME", default_models.get(selected_provider, ""))
+    selected_model = st.sidebar.text_input("Model Name", value=env_model)
+
+# Auto-fix missing :free on OpenRouter if using free tier
+if selected_provider == "openrouter" and "nemotron" in selected_model and not selected_model.endswith(":free"):
+    selected_model = f"{selected_model}:free"
+
 os.environ["MODEL_NAME"] = selected_model
 
-# API Key check & optional input
+# API Key check & input
 key_env_names = {
     "openrouter": "OPENROUTER_API_KEY",
     "gemini": "GEMINI_API_KEY",
@@ -101,48 +118,81 @@ total_existing = len(existing_episodes)
 st.sidebar.subheader("Episode Scope")
 if total_existing > 0:
     cached_episodes = len(list(FACTS_DIR.glob("ep_*.json")))
-    st.sidebar.caption(f"📁 **Total Found:** {total_existing} episodes | ⚡ **Cached:** {cached_episodes}")
+    st.sidebar.caption(f"📁 **Total Episodes:** {total_existing} | ⚡ **Cached:** {cached_episodes}")
+
     num_to_process = st.sidebar.slider(
         "Episodes to process in this run",
         min_value=1,
         max_value=total_existing,
         value=min(total_existing, 5),
-        help="Free models take ~1-2 min per episode. We recommend 3-5 episodes for quick verification.",
     )
+
+    is_heavy_model = "550b" in selected_model
+    est_sec_per_ep = 80 if is_heavy_model else 8
+    est_total_min = max(1, round((num_to_process * est_sec_per_ep) / 60, 1))
+    st.sidebar.caption(f"⏱️ **Est. Time:** ~{est_total_min} min ({'⚡ Fast' if not is_heavy_model else '🐢 Heavy 550B'})")
 else:
     num_to_process = 1
     st.sidebar.info("Upload episode scripts to enable slider.")
 
 run_clicked = st.sidebar.button("🚀 Run Continuity Check", type="primary", use_container_width=True)
 
+# Clear / New Analysis button in sidebar
+if st.sidebar.button("🗑️ Start Fresh / Clear Current Results", use_container_width=True):
+    st.session_state["verified_flags"] = []
+    st.session_state["decisions"] = {}
+    saved_flags_path = OUTPUTS_DIR / "flags_verified.json"
+    if saved_flags_path.exists():
+        saved_flags_path.unlink()
+    st.rerun()
+
 # -------------------------------------------------------------
 # MAIN VIEW: Header & Upload Area
 # -------------------------------------------------------------
-st.title("🎬 Cross-Episode Continuity Checker")
-st.caption("AI-assisted continuity supervisor for microdrama series (50+ short episodes).")
+header_col1, header_col2 = st.columns([8, 2])
+with header_col1:
+    st.title("🎬 Cross-Episode Continuity Checker")
+    st.caption("AI-assisted continuity supervisor for microdrama series (50+ short episodes).")
+with header_col2:
+    if st.session_state.get("verified_flags"):
+        if st.button("🗑️ New Analysis"):
+            st.session_state["verified_flags"] = []
+            st.session_state["decisions"] = {}
+            saved_flags_path = OUTPUTS_DIR / "flags_verified.json"
+            if saved_flags_path.exists():
+                saved_flags_path.unlink()
+            st.rerun()
 
 st.warning("⚠️ **Notice:** Flags are suggestions for a human reviewer. Use the **Human Approval** buttons below to accept or reject each finding.")
 
 # Upload Area
-with st.expander("📁 Upload Episode Screenplays", expanded=(total_existing == 0)):
+with st.expander("📁 Manage / Upload Episode Screenplays", expanded=(total_existing == 0)):
     uploaded_files = st.file_uploader(
-        "Upload episode scripts (.txt, .md, .pdf, .docx)",
+        "Upload new episode scripts (.txt, .md, .pdf, .docx)",
         type=["txt", "md", "pdf", "docx"],
         accept_multiple_files=True,
     )
     if uploaded_files:
+        saved_count = 0
         for file in uploaded_files:
             dest = EPISODES_DIR / file.name
-            with open(dest, "wb") as f:
-                f.write(file.getbuffer())
-        st.success(f"Successfully uploaded {len(uploaded_files)} file(s) into `data/episodes/`.")
-        st.rerun()
+            try:
+                with open(dest, "wb") as f:
+                    f.write(file.getbuffer())
+                saved_count += 1
+            except PermissionError:
+                saved_count += 1
+            except Exception as e:
+                st.warning(f"Could not overwrite {file.name}: {e}")
+        if saved_count > 0:
+            st.success(f"Processed {saved_count} file(s) in `data/episodes/`.")
+            st.rerun()
 
     if total_existing > 0:
-        st.write(f"**Loaded in `data/episodes/` ({total_existing} episodes):**")
-        file_list = [f"Ep {ep['episode']}: {ep['filename']} ({len(ep['text'])} chars)" for ep in existing_episodes[:10]]
-        if total_existing > 10:
-            file_list.append(f"... and {total_existing - 10} more episodes.")
+        st.write(f"**Loaded in `data/episodes/` ({total_existing} episodes ready):**")
+        file_list = [f"Ep {ep['episode']}: {ep['filename']} ({len(ep['text'])} chars)" for ep in existing_episodes[:8]]
+        if total_existing > 8:
+            file_list.append(f"... and {total_existing - 8} more episodes.")
         st.text("\n".join(file_list))
 
 # -------------------------------------------------------------
@@ -169,7 +219,7 @@ if run_clicked:
             for idx, ep in enumerate(episodes, 1):
                 ep_num = ep["episode"]
                 out_file = FACTS_DIR / f"ep_{ep_num:02d}.json"
-                progress_val = int(10 + (idx / len(episodes)) * 35)
+                progress_val = int(10 + (idx / len(episodes)) * 40)
                 progress_bar.progress(progress_val)
 
                 if out_file.exists():
@@ -181,27 +231,27 @@ if run_clicked:
                     except Exception:
                         pass
 
-                status_box.info(f"Stage 2/6: Extracting facts for Episode {ep_num} ({idx}/{len(episodes)})... Please wait (~60-90s).")
+                status_box.info(f"Stage 2/6: Extracting facts for Episode {ep_num} ({idx}/{len(episodes)}) using {selected_model}...")
                 ep_result = extract_episode(ep)
                 out_file.write_text(json.dumps(ep_result, indent=2), encoding="utf-8")
                 all_facts.extend(ep_result.get("facts", []))
 
-            progress_bar.progress(50)
+            progress_bar.progress(55)
 
             # Stage 3: Merge story bible
             status_box.info("Stage 3/6: Merging facts into Story Bible...")
             bible = build_bible(all_facts)
-            progress_bar.progress(65)
+            progress_bar.progress(70)
 
             # Stage 4: Detect contradictions
             status_box.info("Stage 4/6: Detecting candidate contradictions across episodes...")
             raw_flags = detect_all(bible)
-            progress_bar.progress(80)
+            progress_bar.progress(85)
 
             # Stage 5: Skeptical verification
             status_box.info("Stage 5/6: Verifying flags against original scene scripts...")
             verified_flags = verify_all(raw_flags, episodes)
-            progress_bar.progress(92)
+            progress_bar.progress(95)
 
             # Stage 6: Build report
             status_box.info("Stage 6/6: Updating markdown and CSV reports...")
@@ -426,3 +476,5 @@ if flags:
             mime="text/csv",
             use_container_width=True,
         )
+else:
+    st.info("No current continuity analysis loaded. Select your episode scope in the sidebar and click **'🚀 Run Continuity Check'** to analyze.")
