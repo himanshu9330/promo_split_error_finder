@@ -156,9 +156,31 @@ def find_candidates(bible: dict[str, Any]) -> list[dict[str, Any]]:
     """Return (subject, attribute) groups with 2+ different values, plus STATUS and RELATIONSHIP groups."""
     candidates: list[dict[str, Any]] = []
 
+    # Check total episodes represented in bible
+    all_episodes = set()
+    for attrs in bible.get("characters", {}).values():
+        for facts in attrs.values():
+            if isinstance(facts, list):
+                for f in facts:
+                    if isinstance(f, dict) and f.get("episode") is not None:
+                        all_episodes.add(f.get("episode"))
+
+    has_multi_episodes = len(all_episodes) > 1
+    transient_attrs = {"question", "statement", "command", "speech", "utterance", "reaction"}
+
     for subject, attrs in bible.get("characters", {}).items():
         for attr, facts in attrs.items():
             if attr == "aliases" or not isinstance(facts, list):
+                continue
+
+            # Skip pure transient dialogue utterances unless they indicate status/relationship
+            is_status_or_rel = any(
+                f.get("type", "").upper() in ["STATUS", "RELATIONSHIP"]
+                or attr in ["status", "relationship", "spouse", "partner", "marital_status", "alive", "dead", "attire", "identity", "rank"]
+                for f in facts
+            )
+
+            if attr in transient_attrs and not is_status_or_rel:
                 continue
 
             # Distinct normalized values
@@ -168,11 +190,8 @@ def find_candidates(bible: dict[str, Any]) -> list[dict[str, Any]]:
                 if f.get("value") is not None
             }
 
-            is_status_or_rel = any(
-                f.get("type", "").upper() in ["STATUS", "RELATIONSHIP"]
-                or attr in ["status", "relationship", "spouse", "partner", "marital_status", "alive", "dead"]
-                for f in facts
-            )
+            # Distinct episodes in this group
+            episodes_in_facts = {f.get("episode") for f in facts if f.get("episode") is not None}
 
             # Contradiction candidate condition:
             # 1. 2 or more different values found
@@ -180,12 +199,17 @@ def find_candidates(bible: dict[str, Any]) -> list[dict[str, Any]]:
             has_different_values = len(distinct_values) >= 2
             has_multiple_status_rel = is_status_or_rel and len(facts) >= 2
 
-            if has_different_values or has_multiple_status_rel:
+            if (has_different_values or has_multiple_status_rel):
+                # When multiple episodes are present, prioritize groups spanning across episodes
+                if has_multi_episodes and len(episodes_in_facts) < 2 and not is_status_or_rel:
+                    continue
+
                 candidates.append({
                     "subject": subject,
                     "attribute": attr,
                     "distinct_values": sorted(list(distinct_values)),
                     "fact_count": len(facts),
+                    "episodes": sorted(list(episodes_in_facts)),
                     "is_status_or_relationship": is_status_or_rel,
                     "facts": facts,
                 })

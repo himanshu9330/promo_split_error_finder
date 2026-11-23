@@ -126,6 +126,11 @@ def build_report(flags: list[dict[str, Any]] | None = None) -> None:
     OUTPUT_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+    # Persist verified flags to disk so UI and other components never lose state
+    verified_flags_path = BASE_DIR / "outputs" / "flags_verified.json"
+    if flags:
+        verified_flags_path.write_text(json.dumps(flags, indent=2), encoding="utf-8")
+
     decisions = load_decisions()
     sorted_flags = _sort_flags(flags)
     stats = _get_summary_stats(flags, decisions)

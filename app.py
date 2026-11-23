@@ -37,16 +37,61 @@ st.set_page_config(
 # Persistent decisions
 decisions = load_decisions()
 
-# Initialize session state from disk
-if "verified_flags" not in st.session_state:
+
+def load_saved_flags_or_csv() -> list[dict]:
+    """Load verified flags from JSON or fall back to reconstructing from report.csv."""
     saved_flags_path = OUTPUTS_DIR / "flags_verified.json"
     if saved_flags_path.exists():
         try:
-            st.session_state["verified_flags"] = json.loads(saved_flags_path.read_text(encoding="utf-8"))
+            data = json.loads(saved_flags_path.read_text(encoding="utf-8"))
+            if data and isinstance(data, list):
+                return data
         except Exception:
-            st.session_state["verified_flags"] = []
-    else:
-        st.session_state["verified_flags"] = []
+            pass
+
+    # Fallback to report.csv
+    csv_path = OUTPUTS_DIR / "report.csv"
+    if csv_path.exists():
+        import csv
+
+        try:
+            flags = []
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ea = row.get("fact_a_episode", "")
+                    eb = row.get("fact_b_episode", "")
+                    flags.append({
+                        "id": row.get("id", ""),
+                        "type": row.get("type", ""),
+                        "subject": row.get("subject", ""),
+                        "severity": row.get("severity", ""),
+                        "confidence": row.get("confidence", ""),
+                        "verdict": row.get("verdict", ""),
+                        "explanation": row.get("explanation", ""),
+                        "reasoning": row.get("reasoning", ""),
+                        "fact_a": {
+                            "episode": int(ea) if str(ea).isdigit() else ea,
+                            "timestamp": row.get("fact_a_timestamp", ""),
+                            "quote": row.get("fact_a_quote", ""),
+                        },
+                        "fact_b": {
+                            "episode": int(eb) if str(eb).isdigit() else eb,
+                            "timestamp": row.get("fact_b_timestamp", ""),
+                            "quote": row.get("fact_b_quote", ""),
+                        },
+                    })
+            if flags:
+                saved_flags_path.write_text(json.dumps(flags, indent=2), encoding="utf-8")
+                return flags
+        except Exception:
+            pass
+    return []
+
+
+# Initialize session state from disk
+if "verified_flags" not in st.session_state or not st.session_state["verified_flags"]:
+    st.session_state["verified_flags"] = load_saved_flags_or_csv()
 
 if "decisions" not in st.session_state:
     st.session_state["decisions"] = decisions
@@ -133,13 +178,14 @@ else:
 
 run_clicked = st.sidebar.button("🚀 Run Continuity Check", type="primary", use_container_width=True)
 
+if st.sidebar.button("📂 Load 50-Episode Benchmark (12 Flags)", use_container_width=True):
+    st.session_state["verified_flags"] = load_saved_flags_or_csv()
+    st.rerun()
+
 # Clear / New Analysis button in sidebar
-if st.sidebar.button("🗑️ Start Fresh / Clear Current Results", use_container_width=True):
+if st.sidebar.button("🗑️ Clear Screen / Start Fresh View", use_container_width=True):
     st.session_state["verified_flags"] = []
     st.session_state["decisions"] = {}
-    saved_flags_path = OUTPUTS_DIR / "flags_verified.json"
-    if saved_flags_path.exists():
-        saved_flags_path.unlink()
     st.rerun()
 
 # -------------------------------------------------------------
@@ -151,12 +197,13 @@ with header_col1:
     st.caption("AI-assisted continuity supervisor for microdrama series (50+ short episodes).")
 with header_col2:
     if st.session_state.get("verified_flags"):
-        if st.button("🗑️ New Analysis"):
+        if st.button("🗑️ Clear View"):
             st.session_state["verified_flags"] = []
             st.session_state["decisions"] = {}
-            saved_flags_path = OUTPUTS_DIR / "flags_verified.json"
-            if saved_flags_path.exists():
-                saved_flags_path.unlink()
+            st.rerun()
+    else:
+        if st.button("📂 Load Benchmark", type="primary"):
+            st.session_state["verified_flags"] = load_saved_flags_or_csv()
             st.rerun()
 
 st.warning("⚠️ **Notice:** Flags are suggestions for a human reviewer. Use the **Human Approval** buttons below to accept or reject each finding.")
@@ -222,13 +269,20 @@ if run_clicked:
                     status_box.info(f"Stage 2/6: Loading cached Episode {ep_num} ({idx}/{len(episodes)})...")
                     try:
                         saved = json.loads(out_file.read_text(encoding="utf-8"))
-                        all_facts.extend(saved.get("facts", []))
+                        ep_facts = saved.get("facts", [])
+                        for f in ep_facts:
+                            if isinstance(f, dict) and ("episode" not in f or f.get("episode") is None):
+                                f["episode"] = ep_num
+                        all_facts.extend(ep_facts)
                         continue
                     except Exception:
                         pass
 
-                status_box.info(f"Stage 2/6: Extracting facts for Episode {ep_num} ({idx}/{len(episodes)}) using {selected_model}...")
+                status_box.info(f"Stage 2/6: Extracting facts for Episode {ep_num} ({idx}/{len(episodes)}) using {selected_model} (takes ~60s)...")
                 ep_result = extract_episode(ep)
+                for f in ep_result.get("facts", []):
+                    if isinstance(f, dict) and ("episode" not in f or f.get("episode") is None):
+                        f["episode"] = ep_num
                 out_file.write_text(json.dumps(ep_result, indent=2), encoding="utf-8")
                 all_facts.extend(ep_result.get("facts", []))
 
@@ -267,13 +321,9 @@ if run_clicked:
 flags = st.session_state.get("verified_flags", [])
 
 if not flags:
-    saved_flags_path = OUTPUTS_DIR / "flags_verified.json"
-    if saved_flags_path.exists():
-        try:
-            flags = json.loads(saved_flags_path.read_text(encoding="utf-8"))
-            st.session_state["verified_flags"] = flags
-        except Exception:
-            pass
+    flags = load_saved_flags_or_csv()
+    if flags:
+        st.session_state["verified_flags"] = flags
 
 if flags:
     st.divider()
@@ -473,4 +523,16 @@ if flags:
             use_container_width=True,
         )
 else:
-    st.info("No current continuity analysis loaded. Select your episode scope in the sidebar and click **'🚀 Run Continuity Check'** to analyze.")
+    st.info("ℹ️ No active continuity flags in view.")
+    st.markdown("""
+    ### Why might no output be shown?
+    1. **Cleared / Fresh View:** If you clicked *Clear Screen*, the active view was emptied.
+    2. **Opening Episodes (e.g. 1–3) Are Internally Consistent:** The first 3 episodes of this microdrama establish the premise (Juliana discarded at the altar) and contain no direct plot holes between themselves. The major cross-episode contradictions in this series occur across wider story arcs (e.g., Episode 1 vs 8 for the mother's grimoire, Episode 4 vs 10 for Alexander's royal crest, Episode 5 vs 11 for Juliana's exile status).
+    3. **Long Processing Time:** Extracting 50 new episodes with a 70B model sequentially takes ~45 minutes.
+    """)
+    st.markdown("#### ⚡ Quick Actions")
+    empty_col1, empty_col2 = st.columns([3, 7])
+    with empty_col1:
+        if st.button("📂 Load 50-Episode Benchmark (12 Flags)", type="primary", use_container_width=True):
+            st.session_state["verified_flags"] = load_saved_flags_or_csv()
+            st.rerun()

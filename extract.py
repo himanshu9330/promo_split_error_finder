@@ -63,11 +63,13 @@ def extract_episode(ep: dict[str, Any]) -> dict[str, Any]:
         else:
             result = {"episode": ep["episode"], "facts": []}
 
-        # Verify each fact's quote in code
+        # Verify each fact's quote in code and ensure episode number is set
         for fact in result.get("facts", []):
             if isinstance(fact, dict):
                 quote = fact.get("quote", "")
                 fact["quote_verified"] = verify_quote_in_text(quote, ep["text"])
+                if "episode" not in fact or fact["episode"] is None:
+                    fact["episode"] = ep["episode"]
 
         return result
     except Exception as e:
@@ -92,6 +94,9 @@ def extract_all(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             try:
                 saved_data = json.loads(out_file.read_text(encoding="utf-8"))
                 ep_facts = saved_data.get("facts", [])
+                for f in ep_facts:
+                    if isinstance(f, dict) and ("episode" not in f or f.get("episode") is None):
+                        f["episode"] = ep_num
                 all_facts.extend(ep_facts)
                 continue
             except Exception as e:
