@@ -211,7 +211,7 @@ def _call_openrouter(model_name: str, api_key: str, prompt: str, system: str, js
 def call_model(prompt: str, system: str = "", json_mode: bool = False) -> str:
     """Call the configured LLM provider with caching, retries, and optional JSON mode."""
     provider = os.getenv("PROVIDER", "openrouter").strip().lower()
-    model_name = os.getenv("MODEL_NAME", "nvidia/nemotron-3-ultra-550b-a55b:free").strip()
+    model_name = os.getenv("MODEL_NAME", "meta-llama/llama-3.3-70b-instruct").strip()
 
     # Verify matching API key
     key_env_map = {
@@ -285,7 +285,7 @@ def call_model(prompt: str, system: str = "", json_mode: bool = False) -> str:
 
 if __name__ == "__main__":
     active_provider = os.getenv("PROVIDER", "openrouter").strip().lower()
-    active_model = os.getenv("MODEL_NAME", "nvidia/nemotron-3-ultra-550b-a55b:free").strip()
+    active_model = os.getenv("MODEL_NAME", "meta-llama/llama-3.3-70b-instruct").strip()
     print(f"Testing call_model with PROVIDER='{active_provider}' MODEL_NAME='{active_model}'...")
     try:
         reply = call_model("Say hello")

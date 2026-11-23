@@ -66,14 +66,14 @@ os.environ["PROVIDER"] = selected_provider
 # Model preset selection
 if selected_provider == "openrouter":
     model_options = [
-        "nvidia/nemotron-3.5-lightning:free (⚡ Recommended - Fast & Free)",
-        "nvidia/nemotron-3-ultra-550b-a55b:free (🧠 Deep 550B - Heavy ~90s/ep)",
-        "google/gemini-2.0-flash-exp:free (🚀 Ultra Fast)",
+        "meta-llama/llama-3.3-70b-instruct (🚀 Active - Fast & Accurate Reasoning)",
+        "google/gemini-2.0-flash-exp:free (⚡ Ultra Fast)",
+        "nvidia/nemotron-3.5-lightning:free (⚡ Fast & Free)",
         "Custom Model",
     ]
-    model_choice = st.sidebar.selectbox("Recommended Free Models", model_options, index=0)
+    model_choice = st.sidebar.selectbox("Active Models", model_options, index=0)
     if "Custom Model" in model_choice:
-        selected_model = st.sidebar.text_input("Custom Model Name", value=os.getenv("MODEL_NAME", "nvidia/nemotron-3.5-lightning:free"))
+        selected_model = st.sidebar.text_input("Custom Model Name", value=os.getenv("MODEL_NAME", "meta-llama/llama-3.3-70b-instruct"))
     else:
         selected_model = model_choice.split(" ")[0].strip()
 else:
@@ -84,10 +84,6 @@ else:
     }
     env_model = os.getenv("MODEL_NAME", default_models.get(selected_provider, ""))
     selected_model = st.sidebar.text_input("Model Name", value=env_model)
-
-# Auto-fix missing :free on OpenRouter if using free tier
-if selected_provider == "openrouter" and "nemotron" in selected_model and not selected_model.endswith(":free"):
-    selected_model = f"{selected_model}:free"
 
 os.environ["MODEL_NAME"] = selected_model
 
